@@ -1,106 +1,223 @@
-%%writefile app.py
 import streamlit as st
-import torch
-import torch.nn as nn
-import pickle
-import re
 import pandas as pd
 import numpy as np
+import tensorflow as tf
+import pickle
+import re
+
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
-# -----------------------------------
-# Text Cleaning Function
-# -----------------------------------
+# -----------------------------
+# Load Model
+# -----------------------------
+model = tf.keras.models.load_model("bilstm_toxicity.keras")
+
+with open("tokenizer.pkl", "rb") as f:
+    tokenizer = pickle.load(f)
+
+# -----------------------------
+# Labels
+# -----------------------------
+labels = [
+    "toxic",
+    "severe_toxic",
+    "obscene",
+    "threat",
+    "insult",
+    "identity_hate"
+]
+
+# -----------------------------
+# Text Cleaning
+# -----------------------------
 def clean_text(text):
-    text = str(text).lower()
-    text = text.replace('\n', ' ')
-    text = re.sub(r'[^a-zA-Z\s]', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
+
+    text = text.lower()
+
+    text = text.replace("\n", " ")
+
+    text = re.sub(
+        r"[^a-zA-Z\s]",
+        "",
+        text
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    ).strip()
+
     return text
 
-# -----------------------------------
-# LSTM Model
-# -----------------------------------
-class ToxicityLSTM(nn.Module):
-    def __init__(self):
-        super(ToxicityLSTM, self).__init__()
-        self.embedding = nn.Embedding(5000, 128)
-        self.lstm = nn.LSTM(128, 64, batch_first=True)
-        self.dropout = nn.Dropout(0.5)
-        self.fc = nn.Linear(64, 6)
 
-    def forward(self, x):
-        x = self.embedding(x)
-        output, (hidden, cell) = self.lstm(x)
-        x = hidden[-1]
-        x = self.dropout(x)
-        x = self.fc(x)
-        return x
+# -----------------------------
+# Prediction Function
+# -----------------------------
+def predict_toxicity(text):
 
-# -----------------------------------
-# Load Assets
-# -----------------------------------
-@st.cache_resource
-def load_assets():
-    with open("tokenizer.pkl", "rb") as f:
-        tokenizer = pickle.load(f)
-    model = ToxicityLSTM()
-    model.load_state_dict(torch.load("toxicity_model.pth", map_location=torch.device("cpu")))
-    model.eval()
-    return tokenizer, model
+    text = clean_text(text)
 
-tokenizer, model = load_assets()
-labels = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
+    seq = tokenizer.texts_to_sequences([text])
 
-st.title("Comment Toxicity Detector")
+    padded = pad_sequences(
+        seq,
+        maxlen=200
+    )
 
-# --- Single Prediction ---
-st.header("Single Comment Prediction")
-comment = st.text_area("Enter Comment")
+    prediction = model.predict(
+        padded,
+        verbose=0
+    )[0]
 
-if st.button("Analyze"):
-    if comment.strip():
-        cleaned = clean_text(comment)
-        seq = tokenizer.texts_to_sequences([cleaned])
-        padded = pad_sequences(seq, maxlen=200)
-        input_t = torch.tensor(padded, dtype=torch.long)
-        with torch.no_grad():
-            out = model(input_t)
-            probs = torch.sigmoid(out).numpy()[0]
+    return prediction
 
-        st.subheader("Results")
-        cols = st.columns(3)
-        for i, label in enumerate(labels):
-            with cols[i % 3]:
-                st.metric(label, f"{probs[i]:.2%}")
-                st.progress(float(probs[i]))
-    else:
-        st.warning("Please enter text.")
 
-# --- Bulk Prediction ---
-st.header("Bulk CSV Prediction")
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+# -----------------------------
+# Page Title
+# -----------------------------
+st.title("💬 Comment Toxicity Detection")
+
+st.write(
+    """
+    This project detects toxic comments using a Deep Learning BiLSTM model.
+    """
+)
+
+# -----------------------------
+# Project Overview
+# -----------------------------
+st.header("📌 Project Overview")
+
+st.write("""
+Online platforms receive millions of comments every day.
+This model helps identify toxic comments automatically.
+
+Classes:
+- Toxic
+- Severe Toxic
+- Obscene
+- Threat
+- Insult
+- Identity Hate
+""")
+
+# -----------------------------
+# Model Performance
+# -----------------------------
+st.header("📊 Model Performance")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.metric(
+        "Accuracy",
+        "99.41%"
+    )
+
+    st.metric(
+        "Precision",
+        "81.85%"
+    )
+
+with col2:
+    st.metric(
+        "Recall",
+        "63.16%"
+    )
+
+    st.metric(
+        "Macro F1",
+        "42.85%"
+    )
+
+# -----------------------------
+# Single Comment Prediction
+# -----------------------------
+st.header("✍️ Single Comment Prediction")
+
+user_text = st.text_area(
+    "Enter Comment"
+)
+
+if st.button("Predict"):
+
+    if user_text.strip() != "":
+
+        probs = predict_toxicity(
+            user_text
+        )
+
+        st.subheader(
+            "Prediction Results"
+        )
+
+        for label, score in zip(
+            labels,
+            probs
+        ):
+
+            st.write(
+                f"**{label}** : {score*100:.2f}%"
+            )
+
+# -----------------------------
+# CSV Upload
+# -----------------------------
+st.header("📂 Bulk Prediction")
+
+uploaded_file = st.file_uploader(
+    "Upload CSV File",
+    type=["csv"]
+)
+
 if uploaded_file:
-    df = pd.read_csv(uploaded_file)
+
+    df = pd.read_csv(
+        uploaded_file
+    )
+
     if "comment_text" not in df.columns:
-        st.error("CSV must have a 'comment_text' column.")
+
+        st.error(
+            "CSV must contain comment_text column"
+        )
+
     else:
-        with st.spinner('Analyzing...'):
-            all_probs = []
-            for text in df["comment_text"]:
-                cleaned = clean_text(text)
-                seq = tokenizer.texts_to_sequences([cleaned])
-                padded = pad_sequences(seq, maxlen=200)
-                input_t = torch.tensor(padded, dtype=torch.long)
-                with torch.no_grad():
-                    out = model(input_t)
-                    probs = torch.sigmoid(out).numpy()[0]
-                    all_probs.append(probs)
 
-            prob_array = np.array(all_probs)
-            for i, label in enumerate(labels):
-                df[label] = (prob_array[:, i] > 0.5).astype(int)
+        predictions = []
 
-            st.success("Analysis Complete!")
-            st.dataframe(df.head())
-            st.download_button("Download CSV with Predictions", df.to_csv(index=False), "predictions.csv", "text/csv")
+        for text in df["comment_text"]:
+
+            probs = predict_toxicity(
+                str(text)
+            )
+
+            predictions.append(
+                probs
+            )
+
+        pred_df = pd.DataFrame(
+            predictions,
+            columns=labels
+        )
+
+        result = pd.concat(
+            [df, pred_df],
+            axis=1
+        )
+
+        st.dataframe(
+            result.head()
+        )
+
+        csv = result.to_csv(
+            index=False
+        ).encode("utf-8")
+
+        st.download_button(
+            "Download Results",
+            csv,
+            "tox_predictions.csv",
+            "text/csv"
+        )
